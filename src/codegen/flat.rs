@@ -276,7 +276,7 @@ fn placed_attr(p: &crate::syntax::Placement, ctx: &EmitCtx) -> String {
     let id = crate::arch::memory_space_dispatch_id(&p.space) as u64;
     let on_chip = declared_scratch(id, ctx)
         || crate::codegen::generator::on_chip(crate::arch::builtin_address_space(&p.space));
-    crate::codegen::generator::placed_attr(&p.space, on_chip)
+    crate::codegen::generator::placed_attr(ctx.runtime_space_id(id) as i32, on_chip)
 }
 
 /// A declared memory space that is on-chip scratch: shared or per-thread memory.
@@ -299,7 +299,7 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
     if id == 0 || host_or_on_chip || declared_scratch(id, ctx) {
         return None;
     }
-    Some(id as i32)
+    Some(ctx.runtime_space_id(id) as i32)
 }
 
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
@@ -891,10 +891,9 @@ pub struct EmitCtx {
     /// with no declared sub-spaces.
     pub subspaces: HashMap<u64, SubspaceInfo>,
     /// Declared topology arch by dispatch id, so a `vx.spawn` can carry the arch its machine file
-    /// declared and the device pipeline can gate on the DECLARATION rather than on the dispatch-id
-    /// band -- which a custom topology can never enter (declared ids start at 3000 by
-    /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
-    /// keep riding the band.
+    /// declared and the device pipeline can gate on the DECLARATION rather than on the dispatch
+    /// id. `runtime_topology_id` reads it too, to give a declared GPU `Topology::GPU[0]`'s id.
+    /// Built-in topologies are not in this map.
     pub topo_archs: HashMap<i64, String>,
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
@@ -926,6 +925,9 @@ pub struct SubspaceInfo {
     /// backend receives and `numa_alloc_onnode` needs a node number. See
     /// `arch::numa_dispatch_id`.
     pub numa_node: Option<u64>,
+    /// The memory of a GPU a machine file declares: the id the runtime is given for it in place
+    /// of `dispatch_id`, since the runtime knows a GPU only by `Topology::GPU`'s ids.
+    pub gpu_runtime_id: Option<i32>,
 }
 
 /// Runtime helpers the JIT links rather than the module defining: a body that calls one gets a
@@ -1011,6 +1013,11 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
                     .to_string(),
                 ),
                 numa_node: decl.numa_node,
+                gpu_runtime_id: crate::arch::is_declared_gpu_memory(
+                    &space,
+                    env.topologies.values().map(|t| &t.descriptor),
+                )
+                .then(crate::arch::declared_gpu_runtime_id),
             }
         })
         .collect();
@@ -1023,6 +1030,25 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 }
 
 impl EmitCtx {
+    /// The id the runtime is given for the memory space with dispatch id `id`.
+    pub(crate) fn runtime_space_id(&self, id: u64) -> u64 {
+        self.subspaces
+            .get(&id)
+            .and_then(|s| s.gpu_runtime_id)
+            .map_or(id, |gpu| gpu as u64)
+    }
+
+    /// The id the runtime is given for the topology with dispatch id `id`: a GPU a machine file
+    /// declares runs where `Topology::GPU[0]` does.
+    pub(crate) fn runtime_topology_id(&self, id: i64) -> i64 {
+        match self.topo_archs.get(&id) {
+            Some(arch) if crate::arch::is_gpu_arch(arch) => {
+                crate::arch::declared_gpu_runtime_id() as i64
+            }
+            _ => id,
+        }
+    }
+
     /// Build the callee + struct-layout maps from the registry. The tensor map is *not* in the
     /// registry (tensor types are structural); populate it separately from the lowerer's side table.
     pub fn from_registry(

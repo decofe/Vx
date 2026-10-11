@@ -746,9 +746,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // The declared arch travels from the machine file, via the spawn, onto the
     // outlined kernel -- a discardable attribute, so no dialect change. It is
     // what lets `materializeGpuKernels` gate device compilation on the
-    // DECLARATION instead of the dispatch-id band, which a custom topology
-    // arithmetically cannot enter (declared ids start at 3000; the band is
-    // [500, 600)).
+    // DECLARATION instead of the dispatch id.
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
     // Keeps the kernel off the GPU device image: the slot is host stack.
@@ -2026,8 +2024,8 @@ struct ConvertVxToStandardPass
       // nvptx64` has answered "what code do we emit for this topology" -- that
       // is the field's documented meaning -- and this is the place that needed
       // the answer; before the attribute existed the gate was the band alone,
-      // which a custom topology can never enter (declared ids start at 3000 by
-      // construction), so no declaration could produce a device image (Vx#352).
+      // which a declared topology's hashed id never entered, so no declaration
+      // could produce a device image.
       //
       // The band stays as the fallback for kernels with no arch attribute:
       // built-in topologies (whose descriptors declare no arch) and the

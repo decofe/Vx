@@ -302,12 +302,16 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 // other (#348).
 #define VX_TOPO_NIC_BASE 800
 #define VX_TOPO_REMOTE_BASE 900
-// Names declared in a machine file (`Topology DecodeWorker { .. }`) hash into
-// 1000..1999, and topology slices into 2000..2999. A name is the identity; the
-// hash is a shortcut, which is why `toponame=` in the payload is what a plugin
-// resolving a worker to an endpoint should key on.
-#define VX_TOPO_NAMED_BASE 1000
+// A memory space on NUMA node N is 1000 + N (`VX_NUMA_DISPATCH_BASE` in
+// runtime/host_dispatch_common.h), and topology slices hash into
+// 2000..2999. Names declared in a machine file (`Topology DecodeWorker { .. }`)
+// hash into 3000 and up. A name is the identity; the hash is a shortcut, which
+// is why `toponame=` in the payload is what a plugin resolving a worker to an
+// endpoint should key on. A declared topology with `arch: nvptx64`, and the
+// memory it names as `memory:`, are given `VX_TOPO_GPU_BASE` instead: a GPU is
+// known here only by that band.
 #define VX_TOPO_SLICE_BASE 2000
+#define VX_TOPO_NAMED_BASE 3000
 #define VX_TOPO_BAND 100
 
 /// The device ordinal within `base`'s band, or -1 when the id is not in it.

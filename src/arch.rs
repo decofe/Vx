@@ -440,6 +440,31 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
     }
 }
 
+/// Whether a topology a machine file declares with this `arch:` runs its kernels on a GPU.
+/// Only `nvptx64` gets a device image (`materializeGpuKernels` in src/dialect/VxLowering.cpp).
+pub fn is_gpu_arch(arch: &str) -> bool {
+    arch == "nvptx64"
+}
+
+/// The id the runtime is given for a GPU a machine file declares, and for the memory it names
+/// as `memory:`. The runtime knows a GPU only by `Topology::GPU`'s ids, and a declaration cannot
+/// say which GPU it is yet, so it is the first one. The ids above stay the names the compiler
+/// tells spaces and topologies apart by; this is only what the runtime is handed.
+pub fn declared_gpu_runtime_id() -> i32 {
+    topology_dispatch_id(&Topology::gpu(0))
+}
+
+/// Whether `space` is a declared memory that a topology with a GPU arch names as `memory:`.
+pub fn is_declared_gpu_memory<'a>(
+    space: &MemorySpace,
+    topologies: impl IntoIterator<Item = &'a TopologyDescriptor>,
+) -> bool {
+    matches!(space, MemorySpace::Custom(_))
+        && topologies.into_iter().any(|d| {
+            d.default_space == *space && d.arch.as_ref().is_some_and(|a| is_gpu_arch(a.as_ref()))
+        })
+}
+
 /// The name of the built-in memory space whose dispatch id is `id`, if one has it. A declared
 /// space's id is a hash of its name and cannot be turned back.
 pub fn builtin_memory_space_name(id: u64) -> Option<String> {
@@ -2366,5 +2391,32 @@ mod tests {
         let err = g.owning_topology(&shared).unwrap_err();
         assert!(err.contains("ambiguous"), "{err}");
         assert!(err.contains("DevA") && err.contains("DevB"), "{err}");
+    }
+
+    /// Only a declared memory that a topology with `arch: nvptx64` names as `memory:` is a
+    /// declared GPU's memory. A built-in space keeps its own id, and so does the memory of a
+    /// topology with another arch or none.
+    #[test]
+    fn the_memory_of_a_declared_gpu_is_recognised() {
+        let hbm = MemorySpace::Custom("HBM".into());
+        let device = |arch: Option<&str>, default_space: MemorySpace| TopologyDescriptor {
+            arch: arch.map(Into::into),
+            default_space,
+            visibility: Vec::new(),
+            transfers: Vec::new(),
+            dtypes: None,
+        };
+        let gpu = [device(Some("nvptx64"), hbm.clone())];
+        assert!(is_declared_gpu_memory(&hbm, &gpu));
+        assert!(!is_declared_gpu_memory(
+            &MemorySpace::Custom("SRAM".into()),
+            &gpu
+        ));
+        for other in [Some("applegpu"), Some("x86_64"), None] {
+            assert!(!is_declared_gpu_memory(&hbm, &[device(other, hbm.clone())]));
+        }
+        let builtin = [device(Some("nvptx64"), MemorySpace::GpuHbm)];
+        assert!(!is_declared_gpu_memory(&MemorySpace::GpuHbm, &builtin));
+        assert_eq!(declared_gpu_runtime_id(), 500);
     }
 }

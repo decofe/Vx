@@ -179,12 +179,6 @@ pub(crate) fn dead_continuation<'c>(
         .append_block(melior::ir::Block::new(&[]))
 }
 
-/// Runtime dispatch id for a topology. Thin delegate to the single source of truth in
-/// `arch`, which co-locates this with the memory-space mapping so the two cannot diverge.
-pub(crate) fn topology_to_i32(top: &syntax::Topology) -> i32 {
-    crate::arch::topology_dispatch_id(top)
-}
-
 pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, String> {
     let mut inner = ty_str;
     if inner.starts_with("memref<") && inner.ends_with('>') {
@@ -1730,6 +1724,7 @@ pub(crate) fn cast_memref<'c>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::topology_dispatch_id as topology_to_i32;
     use syntax::{Expr, NumberExpr, Span, Topology};
 
     fn make_num_expr(val: &str) -> Box<Expr> {

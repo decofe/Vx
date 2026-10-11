@@ -1953,7 +1953,28 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Written::Space => p.space.clone(),
         };
-        Some(crate::arch::memory_space_dispatch_id(&space))
+        Some(self.runtime_space_id(&space))
+    }
+
+    /// The id the runtime is given for `space`: a GPU's, for the memory of a GPU a machine file
+    /// declares.
+    pub(crate) fn runtime_space_id(&self, space: &syntax::MemorySpace) -> i32 {
+        if crate::arch::is_declared_gpu_memory(space, self.topologies.values()) {
+            return crate::arch::declared_gpu_runtime_id();
+        }
+        crate::arch::memory_space_dispatch_id(space)
+    }
+
+    /// The id the runtime is given for `top`: a GPU a machine file declares runs where
+    /// `Topology::GPU[0]` does.
+    pub(crate) fn runtime_topology_id(&self, top: &syntax::Topology) -> i32 {
+        if let syntax::Topology::Custom(name) = top {
+            let arch = self.topologies.get(name).and_then(|d| d.arch.as_ref());
+            if arch.is_some_and(|a| crate::arch::is_gpu_arch(a.as_ref())) {
+                return crate::arch::declared_gpu_runtime_id();
+            }
+        }
+        crate::arch::topology_dispatch_id(top)
     }
 
     pub(crate) fn enum_payload_type_str(&self, name: &str) -> Option<String> {
@@ -2608,14 +2629,11 @@ pub(crate) fn enum_has_payload(
 /// `{vx.placed = 500 : i32}`: a placed parameter or result, and the topology the plugin that
 /// allocated it frees it on, the number a transfer to that memory carries. On-chip memory, shared
 /// or per-thread, is scratch nothing frees: it is `{vx.placed}` with no topology.
-pub(crate) fn placed_attr(space: &syntax::MemorySpace, on_chip: bool) -> String {
+pub(crate) fn placed_attr(runtime_id: i32, on_chip: bool) -> String {
     if on_chip {
         return "{vx.placed}".to_string();
     }
-    format!(
-        "{{vx.placed = {} : i32}}",
-        crate::arch::memory_space_dispatch_id(space)
-    )
+    format!("{{vx.placed = {runtime_id} : i32}}")
 }
 
 /// The tensor a value of type `ty` is, seen through `Verified<..>` and `Pinned<..>`, which add a

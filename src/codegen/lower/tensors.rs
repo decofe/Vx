@@ -99,16 +99,15 @@ fn lower_spawn_region<'c>(
 
     gen.in_spawn = prev_in_spawn;
 
-    let topology_id = topology_to_i32(&this.top);
+    let topology_id = gen.runtime_topology_id(&this.top);
     let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();
 
     // The topology's declared spelling, alongside its id.
     //
-    // The id is a hash for a name declared in a machine file --
-    // `1000 + fnv32(name) % 1000` -- so it is one-way and only 1000 wide. A plugin holding
-    // `topo=1113` cannot recover `DecodeWorker`, so it cannot look the worker up in a fleet
-    // manifest and discover where it lives, which is the whole of resolving a placement to a
-    // machine (#348). Two names can also collide onto one id, and nothing would notice.
+    // The id does not say which declared topology this is: for a name declared in a machine
+    // file it is a one-way hash, and every declared GPU is given `Topology::GPU[0]`'s id. A
+    // plugin needs the name to look the worker up in a fleet manifest and discover where it
+    // lives, which is the whole of resolving a placement to a machine.
     //
     // Carrying the name makes it the identity and the id an optimisation. It costs a few bytes
     // per kernel and lets the compiler stay out of the business of knowing endpoints: the
@@ -221,7 +220,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             .get(&self.space)
             .and_then(|d| d.numa_node)
             .and_then(crate::arch::numa_dispatch_id)
-            .unwrap_or_else(|| crate::arch::memory_space_dispatch_id(&self.space));
+            .unwrap_or_else(|| gen.runtime_space_id(&self.space));
 
         let top_attr = IntegerAttribute::new(gen.i32_ty, target_topology_id as i64).into();
 
@@ -233,7 +232,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // and the read is a load whose operand is the slot. The way home was compiled into a
         // `memcpy` from device memory for exactly that reason (#321, #348).
         let source_topology_id = match gen.infer_ast_type(&self.expr) {
-            Some(syntax::Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top),
+            Some(syntax::Type::Pinned(_, top)) => gen.runtime_topology_id(&top),
             _ => 0,
         };
 

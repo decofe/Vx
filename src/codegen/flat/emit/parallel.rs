@@ -59,7 +59,10 @@ impl FnEmit<'_> {
             .get(&space_id)
             .and_then(|d| d.numa_node)
             .and_then(crate::arch::numa_dispatch_id);
-        let target = numa_target.map(|i| i as u64).unwrap_or(space_id);
+        let target = numa_target
+            .map(|i| i as u64)
+            .unwrap_or_else(|| self.ctx.runtime_space_id(space_id));
+        let source = self.ctx.runtime_topology_id(source as i64);
         let mut attrs = format!("target_topology = {} : i32", target);
         if source != 0 {
             attrs += &format!(", source_topology = {source} : i32");
@@ -203,13 +206,15 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
+        let runtime_topo = self.ctx.runtime_topology_id(topo);
         if let Some(arch) = self.ctx.topo_archs.get(&topo) {
             self.body += &format!(
-                "  }}) {{arch = \"{arch}\", topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n"
+                "  }}) {{arch = \"{arch}\", topology = {runtime_topo} : i32{name}{trip}}} : () -> ({result_ty})\n"
             );
         } else {
-            self.body +=
-                &format!("  }}) {{topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n");
+            self.body += &format!(
+                "  }}) {{topology = {runtime_topo} : i32{name}{trip}}} : () -> ({result_ty})\n"
+            );
         }
         self.terminated = false;
         Ok(())

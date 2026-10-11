@@ -1,0 +1,75 @@
+//===- declared_gpu_is_given_the_gpu_dispatch_id_on_the_flat_path.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU declared in a machine file (`arch: nvptx64`) and the memory it names as `memory:` are
+// both given the id of `Topology::GPU[0]`, 500, which is the only way the runtime knows a GPU.
+// Before, the kernel ran on the GPU while its memory was given a hashed id the runtime does
+// not know, so it was allocated in host memory and the kernel was handed a host pointer.
+//
+// The flat code generator's twin of declared_gpu_is_given_the_gpu_dispatch_id.vx. The kernel is
+// in a function given the tensor, as in the issue, since the older code generator cannot pass a
+// placed tensor to a function. The transfer still names its space `HBM`: only the number the
+// runtime is given changes.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | FileCheck %s
+// CHECK-DAG: call ptr @vx_plugin_alloc_and_transfer(i64 {{.*}}, ptr {{.*}}, i32 500, i32 1)
+// CHECK-DAG: topo=500\00toponame=Device\00
+//
+// A tensor built in `HBM` is allocated on the GPU, the function returning it marks it as the
+// GPU's, and a value moved home from the GPU says that is where it comes from.
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=DEVICE
+// DEVICE-DAG: @zeros_on_the_device() -> (memref<4x1xf32{{.*}}> {vx.placed = 500 : i32})
+// DEVICE-DAG: <{target_topology = 500 : i32}> : (memref<
+// DEVICE-DAG: source_topology = 500 : i32
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=NAMES
+// NAMES: space = "HBM"
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+Topology Device {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn fill<const R : i32>(out : &mut Tensor<f32, [R, 1], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..R {
+      out[r][0] = 1.0;
+    }
+  }
+  return;
+}
+
+fn zeros_on_the_device() -> Tensor<f32, [4, 1], Memory::HBM> {
+  return Tensor<f32, [4, 1], Memory::HBM>::new();
+}
+
+fn home_from(x : Pinned<i32, Topology::Device>) -> i32 {
+  let _home = transfer(x, Memory::CPU_DRAM);
+  return 0;
+}
+
+fn main() -> i32 {
+  let h = Tensor<f32, [1024, 1]>::new();
+  let mut d = transfer(h, Memory::HBM);
+  fill<1024>(&mut d);
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back[1023][0]);
+  let z = transfer(zeros_on_the_device(), Memory::CPU_DRAM);
+  print(z[3][0]);
+  let on_device = spawn on(Topology::Device) {
+    7
+  };
+  print(home_from(on_device));
+  return 0;
+}
