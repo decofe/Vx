@@ -1,0 +1,52 @@
+//===- a_tensor_read_through_a_dereferenced_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// `*t` on a `&Tensor` or `&mut Tensor` is the tensor `t` points to. An element,
+// a row and a reshape of it read the caller's tensor, and the function frees
+// nothing it was only lent. The default code generator compiles it itself,
+// without falling back to the AST one.
+//
+// CHECK-NOT: flat-codegen
+// CHECK: element 2, row 3, reshape 5, reshape of a mut reference 2
+
+fn element(t : &Tensor<f32, [2, 4]>) -> f32 {
+  return (*t)[1][3];
+}
+
+fn row(t : &Tensor<f32, [2, 4]>) -> f32 {
+  let r = (*t)[1];
+  return r[0] + r[3];
+}
+
+fn reshaped(t : &Tensor<f32, [2, 4]>) -> f32 {
+  let v = (*t).reshape([4, 2]);
+  return v[1][1];
+}
+
+fn reshaped_mut(t : &mut Tensor<f32, [2, 4]>) -> f32 {
+  let v = (*t).reshape([8]);
+  return v[7];
+}
+
+fn main() -> i32 {
+  let mut q = Tensor<f32, [2, 4]>::new();
+  q[0][3] = 5.0;
+  q[1][0] = 1.0;
+  q[1][3] = 2.0;
+  print!("element ");
+  print(element(&q));
+  print!(", row ");
+  print(row(&q));
+  print!(", reshape ");
+  print(reshaped(&q));
+  print!(", reshape of a mut reference ");
+  print(reshaped_mut(&mut q));
+  return 0;
+}

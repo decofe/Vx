@@ -75,13 +75,19 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Identifier(id) => self.borrow.views.get(id.name.as_ref()).cloned(),
             Expr::IndexAccess(_) | Expr::MemberAccess(_) => {
-                let (root, path) = Self::extract_base_and_path(expr)?;
+                let (root, path) =
+                    Self::extract_base_and_path(expr).or_else(|| through_a_dereference(expr))?;
                 Some(self.view_into(root, path))
             }
             Expr::MethodCall(mc)
                 if mc.method_name.as_ref() == "reshape" && !mc.is_padding_reshape() =>
             {
-                match &*mc.base {
+                // `(*t).reshape(..)` is a view of what the reference `t` points to.
+                let base = match &*mc.base {
+                    Expr::Dereference(d) => &*d.expr,
+                    base => base,
+                };
+                match base {
                     Expr::Identifier(id) => Some(self.view_into(id.name.to_string(), Vec::new())),
                     base => self.view_of(base, ty),
                 }
@@ -340,5 +346,27 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::diagnostic::SourceSpan::from_ast_span(&arg.span())),
             );
         }
+    }
+}
+
+/// The root and path of `(*t)[1].x`: like `base_and_path`, but the chain starts at a
+/// dereferenced variable, and the view borrows what that reference points to.
+fn through_a_dereference(e: &Expr) -> Option<(String, Vec<String>)> {
+    match e {
+        Expr::Dereference(d) => match &*d.expr {
+            Expr::Identifier(id) => Some((id.name.to_string(), Vec::new())),
+            _ => None,
+        },
+        Expr::MemberAccess(m) => {
+            let (root, mut path) = through_a_dereference(&m.base)?;
+            path.push(m.member.to_string());
+            Some((root, path))
+        }
+        Expr::IndexAccess(ix) => {
+            let (root, mut path) = through_a_dereference(&ix.base)?;
+            path.push(crate::hir::places::index_element(&ix.index));
+            Some((root, path))
+        }
+        _ => None,
     }
 }

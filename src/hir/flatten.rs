@@ -4374,6 +4374,10 @@ impl<'r> Lowerer<'r> {
     /// pointer whose element isn't a scalar/aggregate, declines. (#242)
     fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Lowered<Val> {
         let base = self.lower_expr(ptr_expr)?;
+        // A reference to a tensor is the tensor itself, so reading `*t` is reading `t`.
+        if !is_place && matches!(base.ty, LoweredTy::Tensor { .. }) {
+            return Ok(base);
+        }
         if !matches!(base.ty, LoweredTy::Ptr) {
             return Err(Decline::TypeNotModelled {
                 what: "a dereference of something that is not a pointer",

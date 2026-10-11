@@ -656,6 +656,17 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
         let (ptr_val, ptr_ty, block) = gen.generate_expr(&self.expr, block)?;
         let ptr_ty_str = ptr_ty.to_string();
 
+        // A reference to a tensor is the tensor's memref, so `*t` is `t`.
+        if ptr_ty_str.starts_with("memref<")
+            && matches!(
+                gen.infer_ast_type(&self.expr)
+                    .and_then(|t| deref_pointee_type(&t)),
+                Some(syntax::Type::Tensor(..))
+            )
+        {
+            return Ok((ptr_val, ptr_ty, block));
+        }
+
         // The pointee (loaded) type: the checker-set `self.ty` when present; else the pointee recovered
         // from the pointer expression's AST type (`p : *mut i32` -> `i32`) — MLIR opaque pointers carry
         // no pointee, so the old `!llvm.ptr<…>` string-parse never fired and fell through to a wrong
