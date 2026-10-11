@@ -1,0 +1,46 @@
+//===- unsafe_fn_called_by_its_type_name_or_twice.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s '--implicit-check-not=Error['
+//
+// Calling an `unsafe fn` needs an `unsafe` block, however it is called: through its type's
+// name, `Cell::make(1)`, generic or not, and a generic one on every call, not only the
+// first. Inside an `unsafe` block the same calls are fine.
+
+struct Cell {
+  v : i32,
+}
+
+impl Cell {
+  unsafe fn make(v : i32) -> Cell {
+    return Cell {
+      v: v
+    };
+  }
+
+  unsafe fn wrap<T>(x : T) -> T {
+    return x;
+  }
+}
+
+unsafe fn first<T>(x : T) -> T {
+  return x;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E5001] at [[@LINE+1]]:{{.*}}'Cell::make'
+  let a = Cell::make(1);
+  // CHECK: Error[E5001] at [[@LINE+1]]:
+  let b = first(2);
+  // CHECK: Error[E5001] at [[@LINE+1]]:
+  let c = first(3);
+  // CHECK: Error[E5001] at [[@LINE+1]]:{{.*}}'Cell::wrap'
+  let w = Cell::wrap(6);
+  let d = unsafe { Cell::make(4) };
+  let e = unsafe { first(5) };
+  return a.v + b + c + d.v + e + w;
+}

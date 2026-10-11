@@ -1561,6 +1561,17 @@ impl<'a> TypeChecker<'a> {
         if let Some(ib) = chosen {
             for m in &ib.methods {
                 if m.name == method_name.as_str().into() {
+                    if m.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe function '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                resolved_name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
                     found_generic_func = Some(m.clone());
                     // A method's own list repeats the impl block's parameters, so
                     // take each name once or an unbound one is reported twice.
