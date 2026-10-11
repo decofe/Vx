@@ -1,0 +1,29 @@
+//===- a_view_adds_nothing_to_the_working_set.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A reshape of a placed tensor is a view: it shares the tensor's buffer and
+// allocates nothing. So the one 3 MiB tile below fits the 4 MiB space, however
+// many views of it the program takes. Counting each view as a tile of its own
+// made this 9 MiB and refused it (E6010).
+//
+// RUN: vxc %s | FileCheck %s
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: cached, scope: device
+}
+
+fn main() -> i32 {
+  let x = Tensor<f32, [1024, 768]>::uninit();
+  let w = transfer(x, Memory::GPU_HBM);
+  let _flat = w.reshape([786432]);
+  let _tall = w.reshape([768, 1024]);
+  print!("admitted");
+  return 0;
+}
+
+// CHECK: {{^}}admitted

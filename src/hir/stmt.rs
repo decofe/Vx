@@ -372,6 +372,9 @@ impl<'a> TypeChecker<'a> {
         // twice, counted one tile as two, and re-litigated a destination the transfer had
         // already accepted.
         let initializer_places_its_own = matches!(expr, Expr::Transfer(_));
+        // A view (`t.reshape(..)`, `q[1]`) shares its owner's buffer, which is already in the
+        // working set; it is checked against the space but adds no tile.
+        let is_view = self.view_of(expr, &ty).is_some();
         let context = format!("variable '{}'", name);
         let binding_ty = if let Some(ann) = ty_ann {
             // `Unknown` is the poison type of an already-reported failure (an unresolved call, a
@@ -400,7 +403,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             // Capacity: a placed tensor annotation must fit its memory space.
-            if !initializer_places_its_own {
+            if is_view {
+                self.check_declared_type_placement(ann, &context, span);
+            } else if !initializer_places_its_own {
                 self.check_type_placement(ann, &context, span);
             }
             self.insert(name.to_string(), ann.clone());
@@ -410,7 +415,9 @@ impl<'a> TypeChecker<'a> {
             // so the inferred type gets the same check. Without this, every placement written
             // only in the initializer -- the ordinary spelling -- escaped capacity admission,
             // element-type admission, and the working set.
-            if !initializer_places_its_own {
+            if is_view {
+                self.check_declared_type_placement(&ty, &context, span);
+            } else if !initializer_places_its_own {
                 self.check_type_placement(&ty, &context, span);
             }
             self.insert(name.to_string(), ty.clone());
