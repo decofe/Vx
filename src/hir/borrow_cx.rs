@@ -52,6 +52,10 @@ pub(crate) struct BorrowCx {
     pub(crate) drops: crate::hir::check::drops::DropFrames,
     /// What each view variable (`let r = q[i]`) borrows. Reset per function.
     pub(crate) views: HashMap<Symbol, crate::hir::check::views::View>,
+    /// For each name, a number that changes every time the name is declared, so a `KnownIndex`
+    /// can tell whether the variable it names is still the same one.
+    declarations: HashMap<String, u64>,
+    next_declaration: u64,
 }
 
 /// What the borrow checker needs to know about a block to decide when a borrow made in or
@@ -89,11 +93,25 @@ impl Default for BorrowCx {
             views: HashMap::new(),
             borrowers_ever: HashMap::new(),
             drops: Default::default(),
+            declarations: HashMap::new(),
+            next_declaration: 0,
         }
     }
 }
 
 impl BorrowCx {
+    /// `name` is declared again: what an index said about the old one is no longer about it.
+    pub(crate) fn note_declaration(&mut self, name: &str) {
+        self.next_declaration += 1;
+        self.declarations
+            .insert(name.to_string(), self.next_declaration);
+    }
+
+    /// Which declaration of `name` is in scope, or `None` for a name never declared here.
+    pub(crate) fn declaration_of(&self, name: &str) -> Option<u64> {
+        self.declarations.get(name).copied()
+    }
+
     // --- NLL block liveness ---
 
     /// Enter a block: install what it names and declares, and start at statement 0.

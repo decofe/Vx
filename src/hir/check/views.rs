@@ -227,7 +227,7 @@ impl<'a> TypeChecker<'a> {
         span: &crate::syntax::Span,
     ) {
         for (owner, path) in &view.owners {
-            self.check_borrow_conflicts(owner, path, is_mut, span);
+            self.check_borrow_conflicts(owner, path, &[], is_mut, span);
         }
         for (owner, path) in view.owners.iter().chain(&view.behind) {
             self.borrow.record(
@@ -237,6 +237,7 @@ impl<'a> TypeChecker<'a> {
                     scope_depth: self.scopes.len(),
                     borrower_name: Some(borrower.to_string()),
                     path: path.clone(),
+                    indices: Vec::new(),
                 },
             );
             if is_mut {

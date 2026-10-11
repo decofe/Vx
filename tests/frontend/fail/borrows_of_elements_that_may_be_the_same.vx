@@ -1,0 +1,109 @@
+//===- borrows_of_elements_that_may_be_the_same.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s '--implicit-check-not=Error['
+//
+// `&mut arr[i]` next to another borrow of `arr[j]` stays refused unless the program shows the
+// two indices differ, and what it showed is still about the same variables.
+//
+// formal_verification/borrows_of_elements_the_program_shows_are_different.vx has the cases that
+// are accepted.
+
+fn shown_equal(i : i32, j : i32) -> i32 {
+  let mut arr = Tensor<i32>([8]);
+  if i == j {
+    let x = &mut arr[i];
+    // CHECK: Error[E4004] at [[@LINE+1]]:
+    let y = &mut arr[j];
+    *x = 1;
+    *y = 2;
+  }
+  return arr[0];
+}
+
+fn nothing_shown(i : i32, j : i32) -> i32 {
+  let mut arr = Tensor<i32>([8]);
+  let x = &mut arr[i];
+  // CHECK: Error[E4004] at [[@LINE+1]]:
+  let y = &mut arr[j];
+  *x = 1;
+  *y = 2;
+  return arr[0];
+}
+
+// `i` is `mut` and changes after the `if` checked it.
+fn index_changed(j : i32) -> i32 {
+  let mut arr = Tensor<i32>([8]);
+  let mut i = 0;
+  if i != j {
+    i = j;
+    let x = &mut arr[i];
+    // CHECK: Error[E4004] at [[@LINE+1]]:
+    let y = &mut arr[j];
+    *x = 1;
+    *y = 2;
+  }
+  return arr[0];
+}
+
+// The second `i` is another variable, equal to `j`.
+fn index_declared_again(i : i32, j : i32) -> i32 {
+  let mut arr = Tensor<i32>([8]);
+  if i != j {
+    let x = &mut arr[i];
+    let i = j;
+    // CHECK: Error[E4004] at [[@LINE+1]]:
+    let y = &mut arr[i];
+    *x = 1;
+    *y = 2;
+  }
+  return arr[0];
+}
+
+// `x` borrowed the first `i`, which may equal `j`. The second `i` is `j + 1`, but that says
+// nothing about the first.
+fn first_index_declared_again(i : i32, j : i32) -> i32 {
+  let mut arr = Tensor<i32>([8]);
+  let x = &mut arr[i];
+  let i = j + 1;
+  // CHECK: Error[E4004] at [[@LINE+1]]:
+  let y = &mut arr[j];
+  *x = i;
+  *y = 2;
+  return arr[0];
+}
+
+// `k == j` was true when it was asserted, but `k` changed since, so `i != k` says nothing
+// about `i` and `j`.
+fn fact_about_a_changed_variable(i : i32, j : i32) -> i32 {
+  let mut arr = Tensor<i32>([8]);
+  let mut k = j;
+  assert(k == j);
+  k = 100;
+  if i != k {
+    let x = &mut arr[i];
+    // CHECK: Error[E4004] at [[@LINE+1]]:
+    let y = &mut arr[j];
+    *x = 1;
+    *y = 2;
+  }
+  return k;
+}
+
+// Reading the element that may be the borrowed one.
+fn read_maybe_the_same(i : i32, j : i32) -> i32 {
+  let mut arr = Tensor<i32>([8]);
+  let x = &mut arr[i];
+  // CHECK: Error[E4002] at [[@LINE+1]]:
+  let v = arr[j];
+  *x = v;
+  return v;
+}
+
+fn main() -> i32 {
+  return 0;
+}

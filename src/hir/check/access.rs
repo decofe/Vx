@@ -854,8 +854,18 @@ impl<'a> TypeChecker<'a> {
                 if let Some((name, mut path)) = place {
                     if !self.borrow.skip_borrow_check && !self.speculating {
                         path.push(crate::hir::places::index_element(idx));
-                        let conflict = self.borrow.live_borrows(&name).iter().any(|b| {
-                            b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
+                        let mut indices = self.known_indices(obj);
+                        indices.push(
+                            (path.last().map(String::as_str)
+                                == Some(crate::hir::places::ANY_INDEX))
+                            .then(|| self.known_index(idx))
+                            .flatten(),
+                        );
+                        let live = self.borrow.live_borrows(&name).to_vec();
+                        let conflict = live.iter().any(|b| {
+                            b.is_mut
+                                && crate::hir::places::paths_may_alias(&path, &b.path)
+                                && !self.indices_differ(&path, &indices, &b.path, &b.indices)
                         });
                         if conflict {
                             // Point at the variable, as the whole-variable rule does.
@@ -1097,9 +1107,14 @@ impl<'a> TypeChecker<'a> {
 
                 let direct = Self::extract_base_and_path(inner);
                 let is_reborrow = direct.is_none();
+                let indices = if is_reborrow {
+                    Vec::new()
+                } else {
+                    self.known_indices(inner)
+                };
                 let place = direct.or_else(|| self.reborrow_base_and_path(inner));
                 if let Some((name, path)) = place {
-                    self.check_borrow_conflicts(&name, &path, *is_mut, span);
+                    self.check_borrow_conflicts(&name, &path, &indices, *is_mut, span);
                     if !self.speculating {
                         // `&*rq` points at what `rq` points at, and keeps it borrowed after
                         // `rq`'s last use. Conflicts are checked on `rq`, which already holds
@@ -1113,6 +1128,7 @@ impl<'a> TypeChecker<'a> {
                                         scope_depth: self.scopes.len(),
                                         borrower_name: self.current_assignment_target.clone(),
                                         path: owner_path,
+                                        indices: Vec::new(),
                                     },
                                 );
                             }
@@ -1124,6 +1140,7 @@ impl<'a> TypeChecker<'a> {
                                 scope_depth: self.scopes.len(),
                                 borrower_name: self.current_assignment_target.clone(),
                                 path,
+                                indices,
                             },
                         );
                         // Whoever holds a mutable borrow can write through it, and the
@@ -1152,6 +1169,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         name: &str,
         path: &[String],
+        indices: &[Option<crate::hir::env::KnownIndex>],
         is_mut: bool,
         span: &crate::syntax::Span,
     ) {
@@ -1161,9 +1179,14 @@ impl<'a> TypeChecker<'a> {
         // NLL: `live_borrows` sweeps dead borrows first, so a borrow whose borrower is no longer
         // used does not block a new one (#276).
         let mut conflict_reported = false;
-        for b in self.borrow.live_borrows(name) {
+        let live = self.borrow.live_borrows(name).to_vec();
+        for b in &live {
             // Split borrows: skip a record whose path is disjoint from this borrow's.
             if !crate::hir::places::paths_may_alias(path, &b.path) {
+                continue;
+            }
+            // `a[i]` and `a[j]` where the program shows `i != j`.
+            if self.indices_differ(path, indices, &b.path, &b.indices) {
                 continue;
             }
             if b.is_mut {
@@ -1190,6 +1213,151 @@ impl<'a> TypeChecker<'a> {
         }
         if conflict_reported {
             self.drop_access_error_for(name, span);
+        }
+    }
+
+    /// For each element of the path `extract_base_and_path` gives `place`, the index expression
+    /// when the element is a non-constant index made of integers, `+`, `-`, `*` and immutable
+    /// variables. Such an index means the same value for as long as none of its variables is
+    /// declared again.
+    pub(crate) fn known_indices(&self, place: &Expr) -> Vec<Option<crate::hir::env::KnownIndex>> {
+        match place {
+            Expr::Identifier(_) => Vec::new(),
+            Expr::MemberAccess(m) => {
+                let mut out = self.known_indices(&m.base);
+                out.push(None);
+                out
+            }
+            Expr::IndexAccess(ix) => {
+                let mut out = self.known_indices(&ix.base);
+                let known = (crate::hir::places::index_element(&ix.index)
+                    == crate::hir::places::ANY_INDEX)
+                    .then(|| self.known_index(&ix.index))
+                    .flatten();
+                out.push(known);
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn known_index(&self, index: &Expr) -> Option<crate::hir::env::KnownIndex> {
+        fn names(e: &Expr, out: &mut Vec<String>) -> bool {
+            match e {
+                Expr::Number(n) => n.value.parse::<i64>().is_ok(),
+                Expr::Identifier(id) => {
+                    out.push(id.name.to_string());
+                    true
+                }
+                Expr::BinaryOp(b) => {
+                    matches!(b.op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul)
+                        && names(&b.lhs, out)
+                        && names(&b.rhs, out)
+                }
+                _ => false,
+            }
+        }
+        let mut vars = Vec::new();
+        if !names(index, &mut vars) {
+            return None;
+        }
+        let mut declarations = Vec::new();
+        for var in vars {
+            if self.is_mutable(&var) {
+                return None;
+            }
+            declarations.push((var.clone(), self.borrow.declaration_of(&var)?));
+        }
+        Some(crate::hir::env::KnownIndex {
+            expr: index.clone(),
+            declarations,
+        })
+    }
+
+    /// Whether two places under the same root are told apart by an index: at some element both
+    /// are indices, and the prover shows they cannot be equal. Rows of a tensor do not overlap,
+    /// so places whose indices differ anywhere are different memory.
+    pub(crate) fn indices_differ(
+        &mut self,
+        a_path: &[String],
+        a_indices: &[Option<crate::hir::env::KnownIndex>],
+        b_path: &[String],
+        b_indices: &[Option<crate::hir::env::KnownIndex>],
+    ) -> bool {
+        for k in 0..a_path.len().min(b_path.len()) {
+            let a = self.index_value(&a_path[k], a_indices.get(k).cloned().flatten());
+            let b = self.index_value(&b_path[k], b_indices.get(k).cloned().flatten());
+            if let (Some(a), Some(b)) = (a, b) {
+                if self.prove_different(&a, &b) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// The value of one path element, if it is an index the prover can reason about now: a
+    /// constant, or a `KnownIndex` whose variables are all still the same declarations.
+    fn index_value(
+        &self,
+        element: &str,
+        known: Option<crate::hir::env::KnownIndex>,
+    ) -> Option<Expr> {
+        if element == crate::hir::places::ANY_INDEX {
+            let known = known?;
+            let current = known.declarations.iter().all(|(var, declaration)| {
+                self.borrow.declaration_of(var) == Some(*declaration) && !self.is_mutable(var)
+            });
+            return current.then_some(known.expr);
+        }
+        let k = element.strip_prefix('[')?.strip_suffix(']')?;
+        k.parse::<u64>().ok()?;
+        Some(Expr::Number(NumberExpr::new(
+            k.to_string(),
+            None,
+            Span::default(),
+        )))
+    }
+
+    /// Whether `a != b` follows from what is known here. Only the facts whose variables are all
+    /// immutable are used: a fact about a `mut` variable may be out of date. Without the
+    /// prover, nothing follows.
+    fn prove_different(&mut self, a: &Expr, b: &Expr) -> bool {
+        let mut prover = crate::hir::prover::SmtProver::new();
+        for fact in &self.consteval.constraints {
+            let mut uses = std::collections::HashSet::new();
+            Self::extract_uses_expr(fact, &mut uses);
+            let usable = crate::hir::prover::is_modelled(fact)
+                && !Self::has_call(fact)
+                && uses.iter().all(|v| !self.is_mutable(v));
+            if usable {
+                let _ = prover.add_constraint(fact);
+            }
+        }
+        let equal = Expr::RelationalOp(RelationalOpExpr {
+            lhs: Box::new(a.clone()),
+            op: RelationalOp::Eq,
+            rhs: Box::new(b.clone()),
+            span: Span::default(),
+            operand_ty: None,
+        });
+        if prover.add_constraint(&equal).is_err() {
+            return false;
+        }
+        // Unsatisfiable means the two can never be equal.
+        matches!(prover.prove(), Ok(false))
+    }
+
+    fn has_call(e: &Expr) -> bool {
+        match e {
+            Expr::FunctionCall(_) => true,
+            Expr::BinaryOp(b) => Self::has_call(&b.lhs) || Self::has_call(&b.rhs),
+            Expr::RelationalOp(r) => Self::has_call(&r.lhs) || Self::has_call(&r.rhs),
+            Expr::LogicalOp(l) => Self::has_call(&l.lhs) || Self::has_call(&l.rhs),
+            Expr::UnaryOp(u) => Self::has_call(&u.expr),
+            Expr::MemberAccess(m) => Self::has_call(&m.base),
+            Expr::IndexAccess(i) => Self::has_call(&i.base) || Self::has_call(&i.index),
+            _ => false,
         }
     }
 
@@ -1704,6 +1872,7 @@ impl<'a> TypeChecker<'a> {
                     scope_depth: self.scopes.len(),
                     borrower_name: self.current_assignment_target.clone(),
                     path,
+                    indices: Vec::new(),
                 },
             );
         }

@@ -38,6 +38,10 @@ const KNOWN_DECLINES: &[&str] = &[
     // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
     // without `: void` ("a let with no type annotation"). The file is about the AST path.
     "backend/pass/if_else_with_no_value_bound_by_let.vx",
+    // Two `&mut` borrows of elements of one tensor, or a read of the tensor while one is
+    // borrowed: the flat path declines the borrow ("a borrow of something that is not a
+    // tensor").
+    "frontend/pass/formal_verification/borrows_of_elements_the_program_shows_are_different.vx",
     // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
     // type that is not modelled").
     "backend/pass/result_of_void.vx",

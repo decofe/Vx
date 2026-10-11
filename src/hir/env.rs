@@ -355,12 +355,25 @@ impl<'a> GlobalAstEnv<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BorrowRecord {
     pub is_mut: bool,
     pub scope_depth: usize,
     pub borrower_name: Option<String>,
     pub path: Vec<String>,
+    /// For each element of `path`, the index expression when the element is a non-constant
+    /// index whose value can still be reasoned about. Empty when nothing is known. Lets
+    /// `&mut a[i]` and `&mut a[j]` be held together when the program shows `i != j`.
+    pub indices: Vec<Option<KnownIndex>>,
+}
+
+/// A non-constant index of a borrow: its expression, and which declaration of each variable in
+/// it was in scope. The index means the same value later only while none of them is declared
+/// again; they are all immutable, so nothing else can change them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnownIndex {
+    pub expr: Expr,
+    pub declarations: Vec<(String, u64)>,
 }
 
 /// Where a reference value ultimately points, for return-escape analysis (#243).
@@ -544,6 +557,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
+        self.borrow.note_declaration(&name);
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.into(), (ty, current_top));
