@@ -5004,7 +5004,12 @@ pub(crate) fn tensor_into_field<'c>(
         val_ty = plain_ty;
     }
     if val_ty != field_ty {
-        val = gen.coerce_type(block, val, val_ty, field_ty)?;
+        // `memref<?xf32>` into a `memref<4xf32>` field, or the reverse: a `memref.cast`.
+        val = if gen.is_memref(&val_ty) && gen.is_memref(&field_ty) {
+            super::cast_memref(gen, block, val, val_ty, field_ty)?
+        } else {
+            gen.coerce_type(block, val, val_ty, field_ty)?
+        };
     }
     let desc = crate::codegen::generator::tensor_descriptor_str(rank);
     let desc_ty = Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?;
