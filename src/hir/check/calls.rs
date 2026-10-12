@@ -2217,8 +2217,9 @@ impl<'a> TypeChecker<'a> {
             }
             let dims = dims
                 .into_iter()
-                .map(|d| {
+                .map(|mut d| {
                     if self.eval_expr(&d, &env).is_some() {
+                        crate::syntax::resolve::fold_number(&mut d);
                         Dim::Static(d)
                     } else {
                         Dim::Dyn

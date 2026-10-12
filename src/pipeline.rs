@@ -548,7 +548,8 @@ fn name_resolution_phase(
     // Program-wide, not per-module: a fleet's topologies are declared in the `--machine` file,
     // which is a separate module from the one whose types name them.
     let topologies = crate::resolver::collect_topologies(parsed_modules);
-    let resolve = |m: &mut VxModule| m.resolve_names(&symbol_map, &topologies);
+    let consts = crate::resolver::collect_consts(parsed_modules);
+    let resolve = |m: &mut VxModule| m.resolve_names_with_consts(&symbol_map, &topologies, &consts);
     if sched.is_seq() {
         parsed_modules.iter_mut().for_each(resolve);
     } else {

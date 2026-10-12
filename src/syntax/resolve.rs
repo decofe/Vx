@@ -35,6 +35,13 @@ pub struct ResolutionScope<'a> {
     /// `ImportIndex` is: the scope must not borrow the `Program` during the mutable walk, and a
     /// `--machine` file's declarations arrive from a *different* program in the array anyway.
     topologies: HashMap<TopologyKind, crate::arch::TopologyDescriptor>,
+    /// The value of every integer `const`, by name, as a `Type::Const` literal.
+    consts: HashMap<Symbol, Type>,
+    /// Generic parameters of the declarations being walked. One with a `const`'s name stands
+    /// for itself there, not for the `const`.
+    hidden: std::cell::RefCell<Vec<Symbol>>,
+    /// Only put in the values of `const`s, and resolve nothing else.
+    consts_only: bool,
 }
 
 /// A module's `import` declarations, pre-indexed for the two resolution shapes.
@@ -44,6 +51,95 @@ struct ImportIndex {
     /// `import a::b;` -> the last segment `b` aliases module path `a::b`; used to expand the leading
     /// segment of a *qualified* reference (`b::Name`) to its full defining-module path.
     alias_to_module: HashMap<Symbol, Symbol>,
+}
+
+/// The integer `const`s whose values are known while compiling, as `Type::Const` literals, so a
+/// tensor size can name one. A name declared twice with different values is left out; the
+/// checker reports it.
+fn const_values(decls: &[crate::syntax::ConstDecl]) -> HashMap<Symbol, Type> {
+    let mut by_name: HashMap<&Symbol, &crate::syntax::ConstDecl> = HashMap::new();
+    let mut clashes = Vec::new();
+    for d in decls {
+        if let Some(prev) = by_name.insert(&d.name, d) {
+            if prev != d {
+                clashes.push(&d.name);
+            }
+        }
+    }
+    for name in clashes {
+        by_name.remove(name);
+    }
+    let mut values = HashMap::new();
+    for name in by_name.keys() {
+        if let Some(v) = const_int(name, &by_name, &mut Vec::new()) {
+            if v >= 0 {
+                values.insert((*name).clone(), number_type(v));
+            }
+        }
+    }
+    values
+}
+
+/// The value of the integer `const` `name`, worked out from the other `const`s it names.
+/// `visiting` holds the ones being worked out, so a `const` defined through itself has none.
+fn const_int(
+    name: &Symbol,
+    by_name: &HashMap<&Symbol, &crate::syntax::ConstDecl>,
+    visiting: &mut Vec<Symbol>,
+) -> Option<i128> {
+    let decl = by_name.get(name)?;
+    let Type::Scalar(elem) = &decl.ty else {
+        return None;
+    };
+    if elem.is_float() || matches!(elem, ElementType::Bool | ElementType::Generic(_)) {
+        return None;
+    }
+    if visiting.contains(name) {
+        return None;
+    }
+    let mut names = Vec::new();
+    visit_expr(&decl.expr, &mut |x| {
+        if let Expr::Identifier(id) = x {
+            names.push(id.name.clone());
+        }
+    });
+    visiting.push(name.clone());
+    let mut mapping = HashMap::new();
+    for n in names {
+        let Some(v) = const_int(&n, by_name, visiting) else {
+            visiting.pop();
+            return None;
+        };
+        mapping.insert(n, number_type(v));
+    }
+    visiting.pop();
+    crate::hir::memory::static_extent(&Dim::Static(decl.expr.substitute(&mapping)))
+}
+
+fn number_type(v: i128) -> Type {
+    Type::Const(Box::new(Expr::Number(NumberExpr {
+        value: v.to_string().into(),
+        ty: None,
+        span: Span::default(),
+    })))
+}
+
+/// Turn arithmetic on numbers into the number it comes to, when that is not negative. A
+/// negative size stays as written, for the checker to report.
+pub(crate) fn fold_number(e: &mut Expr) {
+    if matches!(e, Expr::Number(_)) {
+        return;
+    }
+    match crate::hir::memory::static_extent(&Dim::Static(e.clone())) {
+        Some(v) if v >= 0 => {
+            *e = Expr::Number(NumberExpr {
+                value: v.to_string().into(),
+                ty: None,
+                span: e.span(),
+            })
+        }
+        _ => {}
+    }
 }
 
 fn join_path(segs: &[Symbol]) -> String {
@@ -60,6 +156,7 @@ impl<'a> ResolutionScope<'a> {
         symbol_map: &'a SymbolMap,
         imports: &[crate::syntax::ImportDecl],
         topologies: &[crate::arch::TopologyDecl],
+        consts: &[crate::syntax::ConstDecl],
     ) -> Self {
         let mut leaf_to_module = HashMap::new();
         let mut alias_to_module = HashMap::new();
@@ -87,13 +184,71 @@ impl<'a> ResolutionScope<'a> {
                 .iter()
                 .map(|d| (TopologyKind::Custom(d.name.clone()), d.descriptor.clone()))
                 .collect(),
+            consts: const_values(consts),
+            hidden: Default::default(),
+            consts_only: false,
         }
+    }
+
+    /// Hide `generics` from the `const`s until `unhide` is given the returned mark.
+    fn hide(&self, generics: &[GenericParam]) -> usize {
+        let mut hidden = self.hidden.borrow_mut();
+        let mark = hidden.len();
+        hidden.extend(generics.iter().map(|g| Symbol::from(g.name())));
+        mark
+    }
+
+    fn unhide(&self, mark: usize) {
+        self.hidden.borrow_mut().truncate(mark);
+    }
+
+    /// The value of the `const` `name`, unless a generic parameter of that name hides it.
+    fn const_value(&self, name: &Symbol) -> Option<&Type> {
+        if self.hidden.borrow().contains(name) {
+            return None;
+        }
+        self.consts.get(name)
+    }
+
+    /// Replace a `const` given as a generic argument in a name written with its arguments, such
+    /// as the `Buf<N>` of `Buf<N> { .. }`.
+    fn fold_name(&self, name: &mut Symbol) {
+        if !name.contains('<') {
+            return;
+        }
+        let mapping: HashMap<Symbol, Type> = self
+            .consts
+            .iter()
+            .filter(|(n, _)| self.const_value(n).is_some())
+            .map(|(n, v)| (n.clone(), v.clone()))
+            .collect();
+        *name = crate::syntax::substitute_type_name(name, &mapping).into();
+    }
+
+    /// Replace the `const`s in a tensor size by their values, and the whole size by a number
+    /// when it is arithmetic on numbers: `[N * 2]` with `const N = 4` becomes `[8]`.
+    fn fold_extent(&self, e: &mut Expr) {
+        let mut mapping = HashMap::new();
+        visit_expr(e, &mut |x| {
+            if let Expr::Identifier(id) = x {
+                if let Some(value) = self.const_value(&id.name) {
+                    mapping.insert(id.name.clone(), value.clone());
+                }
+            }
+        });
+        if !mapping.is_empty() {
+            *e = e.substitute(&mapping);
+        }
+        fold_number(e);
     }
 
     /// Resolve a nominal type name (possibly a `::`-qualified path) to its *defining* module's GID.
     /// Qualified names route straight to the named module; unqualified names take local definitions
     /// first, then imported names. Returns `None` (leaving the id unresolved) if nothing matches.
     fn resolve_nominal(&self, name: &Symbol) -> Option<TypeId> {
+        if self.consts_only {
+            return None;
+        }
         let s = name.as_ref();
         if let Some(idx) = s.rfind("::") {
             // Qualified `Mod::...::Name`: the leaf is the type, the prefix names the module. Never
@@ -147,6 +302,9 @@ impl Type {
             Type::Struct(name, id) | Type::Enum(name, id) => {
                 if let Some(tid) = scope.resolve_nominal(name) {
                     *id = Some(tid);
+                } else if let Some(value) = scope.const_value(name) {
+                    // The `N` of `Buf<N>`: a generic argument that names a `const` is its value.
+                    *self = value.clone();
                 }
             }
             // A `Type::Generic` is a generic *parameter* — a type variable the parser already
@@ -160,6 +318,7 @@ impl Type {
                     Dim::Static(e) => Some(e),
                     Dim::Dyn => None,
                 }) {
+                    scope.fold_extent(dim);
                     dim.resolve_names(scope);
                 }
                 if let Some(p) = top {
@@ -201,9 +360,43 @@ impl Type {
                 }
                 ret_ty.resolve_names(scope);
             }
-            Type::Const(_) => {}
+            Type::Const(e) => scope.fold_extent(e),
             Type::Matrix | Type::Scalar(_) | Type::Simd(_, _) => {}
             Type::Unknown => {}
+        }
+    }
+
+    /// Put the values of `const`s into the type, as `resolve_names` does, without resolving
+    /// anything else.
+    fn fold_consts(&mut self, scope: &ResolutionScope) {
+        match self {
+            Type::Struct(name, None) => {
+                if let Some(value) = scope.const_value(name) {
+                    *self = value.clone();
+                }
+            }
+            Type::Tensor(_, dims, _) => {
+                for d in dims {
+                    if let Dim::Static(e) = d {
+                        scope.fold_extent(e);
+                    }
+                }
+            }
+            Type::Const(e) => scope.fold_extent(e),
+            Type::Pointer(inner, _, _)
+            | Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Verified(inner)
+            | Type::Pinned(inner, _) => inner.fold_consts(scope),
+            Type::GenericInstance(base, args) => {
+                base.fold_consts(scope);
+                args.iter_mut().for_each(|a| a.fold_consts(scope));
+            }
+            Type::Function(args, ret, _) | Type::Closure(args, ret) => {
+                args.iter_mut().for_each(|a| a.fold_consts(scope));
+                ret.fold_consts(scope);
+            }
+            _ => {}
         }
     }
 }
@@ -214,7 +407,9 @@ impl Placement {
     /// `Topology SmemDev { memory: Memory::SMEM }` can say what `Topology::SmemDev` holds.
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
         self.topology.resolve_names(scope);
-        self.complete(&scope.topologies);
+        if !scope.consts_only {
+            self.complete(&scope.topologies);
+        }
     }
 }
 
@@ -241,6 +436,10 @@ impl Expr {
             Expr::Borrow(e) => e.expr.resolve_names(scope),
             Expr::Dereference(e) => e.expr.resolve_names(scope),
             Expr::FunctionCall(e) => {
+                scope.fold_name(&mut e.name);
+                for t in e.type_args.iter_mut().flatten() {
+                    t.fold_consts(scope);
+                }
                 for a in &mut e.args {
                     a.resolve_names(scope);
                 }
@@ -265,6 +464,7 @@ impl Expr {
                 e.rhs.resolve_names(scope);
             }
             Expr::StructInit(e) => {
+                scope.fold_name(&mut e.name);
                 for (_, ex) in &mut e.fields {
                     ex.resolve_names(scope);
                 }
@@ -357,6 +557,7 @@ impl Statement {
 
 impl Function {
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
+        let mark = scope.hide(&self.generics);
         for (_, ty) in &mut self.params {
             ty.resolve_names(scope);
         }
@@ -364,14 +565,17 @@ impl Function {
         for s in &mut self.body {
             s.resolve_names(scope);
         }
+        scope.unhide(mark);
     }
 }
 
 impl StructDecl {
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
+        let mark = scope.hide(&self.generics);
         for (_, ty) in &mut self.fields {
             ty.resolve_names(scope);
         }
+        scope.unhide(mark);
     }
 }
 
@@ -381,6 +585,7 @@ impl EnumDecl {
         // sees enum by-value dependencies (recursive-layout / cross-module cycle detection) and the
         // flat type stream carries the payload identity. Previously a no-op — fine for the AST
         // type-checker, which re-resolves, but the flat pipeline relies on these GIDs being attached.
+        let mark = scope.hide(&self.generics);
         for (_, payload) in &mut self.variants {
             if let Some(types) = payload {
                 for ty in types {
@@ -388,22 +593,28 @@ impl EnumDecl {
                 }
             }
         }
+        scope.unhide(mark);
     }
 }
 
 impl TraitDecl {
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
+        let mark = scope.hide(&self.generics);
         for method in &mut self.methods {
+            let method_mark = scope.hide(&method.generics);
             for (_, p_ty) in &mut method.params {
                 p_ty.resolve_names(scope);
             }
             method.return_type.resolve_names(scope);
+            scope.unhide(method_mark);
         }
+        scope.unhide(mark);
     }
 }
 
 impl ImplBlock {
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
+        let mark = scope.hide(&self.generics);
         self.target_type.resolve_names(scope);
         for (_, bound) in &mut self.assoc_bindings {
             bound.resolve_names(scope);
@@ -411,6 +622,7 @@ impl ImplBlock {
         for f in &mut self.methods {
             f.resolve_names(scope);
         }
+        scope.unhide(mark);
     }
 }
 
@@ -424,19 +636,39 @@ impl Program {
         symbol_map: &crate::syntax::SymbolMap,
         topologies: &[crate::arch::TopologyDecl],
     ) {
-        // Build the scope up front: it borrows only `symbol_map` (and owns indexes cloned from the
-        // imports and topologies), so it no longer borrows `self` and we can mutably walk the
-        // declarations below.
-        let current = symbol_map.get(&self.module_path);
-        let mut decls = topologies.to_vec();
-        decls.extend(self.topologies.iter().cloned());
-        let scope = ResolutionScope::new(
-            current,
+        self.resolve_names_with_consts(symbol_map, topologies, &[]);
+    }
+
+    /// `resolve_names`, given every `const` of the compilation as well, so a tensor size can
+    /// name a `const` from another module.
+    pub fn resolve_names_with_consts(
+        &mut self,
+        symbol_map: &crate::syntax::SymbolMap,
+        topologies: &[crate::arch::TopologyDecl],
+        consts: &[crate::syntax::ConstDecl],
+    ) {
+        // The scope owns indexes cloned from the imports, topologies and consts, so it does not
+        // borrow `self` while the declarations are walked mutably.
+        self.walk(ResolutionScope::new(
+            symbol_map.get(&self.module_path),
             Some(self.module_path.clone()),
             symbol_map,
             &self.imports,
-            &decls,
-        );
+            &[topologies, &self.topologies].concat(),
+            &[consts, &self.consts].concat(),
+        ));
+    }
+
+    /// Put the values of `const`s into tensor sizes and generic arguments, and change nothing
+    /// else. For a compile that does not run `resolve_names`.
+    pub fn fold_consts(&mut self, consts: &[crate::syntax::ConstDecl]) {
+        let empty = crate::syntax::SymbolMap::new();
+        let mut scope = ResolutionScope::new(None, None, &empty, &[], &[], consts);
+        scope.consts_only = true;
+        self.walk(scope);
+    }
+
+    fn walk(&mut self, scope: ResolutionScope) {
         for s in &mut self.structs {
             s.resolve_names(&scope);
         }

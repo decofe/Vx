@@ -3555,12 +3555,15 @@ impl<'r> Lowerer<'r> {
             };
             return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
         }
-        // A literal is a static extent; anything else is a run-time one, lowered to a value the
-        // alloc reads. The checker typed the result the same way, per position.
+        // A literal, or arithmetic on literals, is a static extent; anything else is a run-time
+        // one, lowered to a value the alloc reads. The checker typed the result the same way,
+        // per position.
         let mut shape = Vec::with_capacity(dims.len());
         let mut extents: Vec<Register> = Vec::new();
         for d in dims {
-            if let Expr::Number(n) = d {
+            let mut folded = d.clone();
+            crate::syntax::resolve::fold_number(&mut folded);
+            if let Expr::Number(n) = folded {
                 shape.push(n.value.as_ref().to_string());
             } else {
                 extents.push(self.lower_scalar_extent(d)?);

@@ -56,6 +56,28 @@ pub fn collect_topologies(modules: &[VxModule]) -> Vec<crate::arch::TopologyDecl
         .collect()
 }
 
+/// Every top-level `const` the compilation declares, gathered like `collect_topologies`, so a
+/// tensor size in one module can name a `const` from another.
+pub fn collect_consts(modules: &[VxModule]) -> Vec<crate::syntax::ConstDecl> {
+    modules
+        .iter()
+        .flat_map(|m| m.consts.iter().cloned())
+        .collect()
+}
+
+/// Put the values of every module's `const`s into the tensor sizes and generic arguments of
+/// all of them. For a compile that does not run `resolve_names`.
+pub fn fold_consts<'p>(modules: impl IntoIterator<Item = &'p mut VxModule>) {
+    let mut modules: Vec<&mut VxModule> = modules.into_iter().collect();
+    let consts: Vec<_> = modules
+        .iter()
+        .flat_map(|m| m.consts.iter().cloned())
+        .collect();
+    for m in &mut modules {
+        m.fold_consts(&consts);
+    }
+}
+
 /// Replace `Self` in a trait method's signature with the type the impl is for. A trait
 /// writes `fn eq(self : Self, other : Self) -> bool`; the copy handed to `impl Eq for i32`
 /// has to say `i32`, because from here on it is an ordinary method and nothing downstream

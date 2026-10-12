@@ -661,7 +661,12 @@ impl Dim {
 
     pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Dim {
         match self {
-            Dim::Static(e) => Dim::Static(e.substitute(mapping)),
+            Dim::Static(e) => {
+                // `[R * C]` at `R = 2, C = 3` is the size `[6]`, which a `[N]` has to match.
+                let mut e = e.substitute(mapping);
+                crate::syntax::resolve::fold_number(&mut e);
+                Dim::Static(e)
+            }
             Dim::Dyn => Dim::Dyn,
         }
     }

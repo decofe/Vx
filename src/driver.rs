@@ -738,6 +738,7 @@ impl CompilerDriver {
                 return Err(format!("Macro expansion failed: {}", e));
             }
         }
+        crate::resolver::fold_consts(&mut program_arr);
         Ok((program_arr, auto_interfaces))
     }
 
@@ -864,8 +865,9 @@ impl CompilerDriver {
     ) -> Result<(), String> {
         let symbol_map = crate::resolver::build_symbol_map(program_arr);
         let topologies = crate::resolver::collect_topologies(program_arr);
+        let consts = crate::resolver::collect_consts(program_arr);
         for m in program_arr.iter_mut() {
-            m.resolve_names(&symbol_map, &topologies);
+            m.resolve_names_with_consts(&symbol_map, &topologies, &consts);
         }
         let (bytes, report) = crate::pipeline::emit_module_interface_reporting(program_arr)
             .map_err(|e| format!("Failed to build module interface: {}", e))?;
@@ -1546,8 +1548,9 @@ impl CompilerDriver {
         mods.extend(module_syntaxes.values().cloned());
         let symbol_map = crate::resolver::build_symbol_map(&mods);
         let topologies = crate::resolver::collect_topologies(&mods);
+        let consts = crate::resolver::collect_consts(&mods);
         for m in &mut mods {
-            m.resolve_names(&symbol_map, &topologies);
+            m.resolve_names_with_consts(&symbol_map, &topologies, &consts);
         }
         let mut registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
         // Fold each precompiled interface's signatures + portable flat-HIR bodies into this compile's

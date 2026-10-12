@@ -136,6 +136,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
+    vxc::resolver::fold_consts(program_arr.iter_mut().chain(std::iter::once(&mut program)));
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
@@ -273,6 +274,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
+    vxc::resolver::fold_consts(program_arr.iter_mut().chain(std::iter::once(&mut program)));
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
@@ -439,6 +441,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
         .expand_module(&mut program)
         .map_err(|e| format!("Macro expansion failed on {:?}: {}", path, e))?;
 
+    vxc::resolver::fold_consts(program_arr.iter_mut().chain(std::iter::once(&mut program)));
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
@@ -556,6 +559,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
+    vxc::resolver::fold_consts(program_arr.iter_mut().chain(std::iter::once(&mut program)));
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
@@ -1259,6 +1263,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
+    vxc::resolver::fold_consts(program_arr.iter_mut().chain(std::iter::once(&mut program)));
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
@@ -1515,6 +1520,7 @@ fn test_melior_matmul() -> Result<(), String> {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
+    vxc::resolver::fold_consts(program_arr.iter_mut().chain(std::iter::once(&mut program)));
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());

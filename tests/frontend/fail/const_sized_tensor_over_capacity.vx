@@ -1,0 +1,32 @@
+//===- const_sized_tensor_over_capacity.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=W1029
+//
+// A tensor sized by a `const` has a size known while compiling, so moving it into a memory
+// too small for it is refused, as it is for a size written as a number.
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+const N : i32 = 2097152;
+
+fn main() -> i32 {
+  // CHECK: E6009{{.*}}needs 8388608 bytes but memory space 'W' has capacity 4194304 bytes
+  let a = Tensor<f32, [N]>::new();
+  let s = transfer(a, Memory::W);
+  let _b = transfer(s, Memory::CPU_DRAM);
+  return 0;
+}

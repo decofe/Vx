@@ -1,0 +1,94 @@
+//===- const_as_tensor_size.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A top-level `const` can be a tensor size, and so can arithmetic on const generic
+// parameters. Printed, in order: a tensor passed to a parameter of type `Tensor<f32, [N]>`;
+// one passed to a generic function called as `fill_with<N>`; one of size `[R * C]` passed
+// where `[K]` is expected; one sized by a const made from another const; one sized by a
+// const from an imported module; the size a generic function sees when its own parameter
+// is named `N` like the const, which is the argument's size, not the const's; one of type
+// `Tensor<f32, [R * C]>` passed where `[K]` is expected; one passed to `fill_with<N - 1>`;
+// and a field of a `Buf<N>`, a struct whose generic argument is the const.
+//
+// EXPECT: 1 2 3 4 5 6 7 8 9
+import tests::modules::a_module_with_consts;
+
+const N : i32 = 4;
+const TWICE : i32 = N * 2;
+
+fn fill(t : &mut Tensor<f32, [N]>) -> void {
+  for i in 0..N {
+    t[i] = 1.0;
+  }
+  return;
+}
+
+fn fill_with<const K : i32>(t : &mut Tensor<f32, [K]>, v : f32) -> void {
+  for i in 0..K {
+    t[i] = v;
+  }
+  return;
+}
+
+fn product<const R : i32, const C : i32>() -> f32 {
+  let mut t = Tensor<f32>([R * C]);
+  fill_with(&mut t, 3.0);
+  return t[R * C - 1];
+}
+
+fn product_typed<const R : i32, const C : i32>() -> f32 {
+  let mut t = Tensor<f32, [R * C]>::new();
+  fill_with(&mut t, 7.0);
+  return t[R * C - 1];
+}
+
+struct Buf<const K : i32> {
+  data : Tensor<f32, [K]>,
+}
+
+fn first(b : &Buf<N>) -> f32 {
+  return b.data[0];
+}
+
+fn size_of<const N : i32>(_t : &Tensor<f32, [N]>) -> i32 {
+  return N;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([N]);
+  fill(&mut a);
+  print(a[3]);
+  print!(" ");
+  let mut b = Tensor<f32>([N]);
+  fill_with<N>(&mut b, 2.0);
+  print(b[3]);
+  print!(" ");
+  print(product<2, 3>());
+  print!(" ");
+  let mut c = Tensor<f32, [TWICE]>::new();
+  fill_with(&mut c, 4.0);
+  print(c[7]);
+  print!(" ");
+  let mut d = Tensor<f32, [SIDES]>::new();
+  fill_with(&mut d, 5.0);
+  print(d[5]);
+  print!(" ");
+  let e = Tensor<f32>([6]);
+  print(size_of(&e));
+  print!(" ");
+  print(product_typed<2, 3>());
+  print!(" ");
+  let mut f = Tensor<f32>([3]);
+  fill_with<N - 1>(&mut f, 8.0);
+  print(f[2]);
+  print!(" ");
+  let g = Buf<N> {
+    data: Tensor<f32, [4]>::fill(9.0)
+  };
+  print(first(&g));
+  return 0;
+}

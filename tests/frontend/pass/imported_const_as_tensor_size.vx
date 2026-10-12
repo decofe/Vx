@@ -1,0 +1,25 @@
+//===- imported_const_as_tensor_size.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `const` from an imported module can be a tensor size, in a normal compile and in a
+// parallel compile (`-j`). `SIDES` is 6, so the tensor fits where `[6]` is expected.
+//
+// RUN: vxc --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc -j 2 --emit-mlir %s 2>&1 | FileCheck %s
+import tests::modules::a_module_with_consts;
+
+fn last(t : &Tensor<f32, [6]>) -> f32 {
+  return t[5];
+}
+
+fn main() -> i32 {
+  let t = Tensor<f32, [SIDES]>::new();
+  return last(&t) as i32;
+}
+
+// CHECK-DAG: func.func @last(%{{.*}}: memref<6xf32>
+// CHECK-DAG: call @last(%{{.*}}) : (memref<6xf32>) -> f32
