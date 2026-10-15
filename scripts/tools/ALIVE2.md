@@ -14,6 +14,26 @@ the harness translates that output into actual LLVM IR before invoking Alive2.
 Set `VXC`, `MLIR_TRANSLATE_PATH`, `OPT_PATH`, or `ALIVE_TV` to override executable
 locations. Use the same LLVM version for the translator, optimizer, and Alive2.
 
+For LLVM 22, the following Alive2 revision built and ran end-to-end on Linux
+with LLVM 22.1.8 and Z3 4.8.12 (2026-10-15). `BUILD_TV=ON` is necessary for
+the standalone `alive-tv` target; the newest Alive2 revision may instead
+expect a newer LLVM API.
+
+```sh
+git clone https://github.com/AliveToolkit/alive2.git
+git -C alive2 checkout 0dc2be5f04ccb61caebb909a610968cb2348f196
+cmake -S alive2 -B alive2/build -GNinja -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TV=ON -DLLVM_DIR="$(llvm-config --cmakedir)"
+cmake --build alive2/build --target alive-tv -j 4
+ALIVE_TV="$PWD/alive2/build/alive-tv" \
+  ./vx-alive2 --mode mlir --function f --out /tmp/vx-mlir-proof \
+  tests/backend/pass/if_ending_in_a_match_that_returns.vx
+```
+
+Set `VXC` if the compiler is not at `target/debug/vxc`. The example checks
+one leaf function; its saved Alive2 report must have a nonempty `Summary:`
+with zero incorrect, failed-to-prove, and Alive2-error transformations.
+
 For a small, self-contained Vx file with a scalar `probe` function, try:
 
 ```sh
@@ -34,7 +54,8 @@ counterexamples for equivalent phi-node and stack-slot lowering (observed on
 `reference` checks whether Vx `-O0` refines the supplied reference IR. The
 reference must define the same named function with a compatible LLVM ABI; it
 must encode the intended behavior independently of Vx's output. Functions
-calling other functions are **not** checked end-to-end by this comparison.
+calling other functions are rejected: Alive2 cannot verify interprocedural
+changes and may report spurious counterexamples after inlining.
 Avoid comparisons involving changed ABIs or target-specific module settings.
 
 The output directory must not already exist. The harness stores the Vx input,

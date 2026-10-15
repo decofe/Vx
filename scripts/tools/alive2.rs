@@ -14,7 +14,8 @@ mlir:      compare default code generation at -O0 and -O3
 llvm:      check LLVM's function(mem2reg,instcombine,simplifycfg) pipeline
 reference: check Vx -O0 against the supplied LLVM IR specification
 
-Repeat --function to check several functions. Use leaf functions with matching ABIs.
+Repeat --function to check several functions. Non-leaf functions are rejected.
+Use leaf functions with matching ABIs.
 The output directory must not exist. It retains commands, IR, and tool reports.
 Set VXC, MLIR_TRANSLATE_PATH, OPT_PATH, and ALIVE_TV to select executables.
 Use a matching LLVM version for Vx, mlir-translate, opt, and Alive2.
@@ -196,6 +197,29 @@ fn has_definition(ir: &str, function: &str) -> bool {
     })
 }
 
+fn has_non_intrinsic_call(ir: &str, function: &str) -> bool {
+    let mut inside = false;
+    for line in ir.lines() {
+        if !inside {
+            inside = line.starts_with("define ")
+                && (line.contains(&format!("@{function}("))
+                    || line.contains(&format!("@\"{function}\"(")));
+            continue;
+        }
+        if line.trim() == "}" {
+            return false;
+        }
+        if line
+            .split_whitespace()
+            .any(|word| matches!(word, "call" | "invoke" | "callbr"))
+            && !line.contains("@llvm.")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn validate(options: &Options) -> Result<Verdict, String> {
     fs::create_dir(&options.out).map_err(|e| format!("cannot create output directory: {e}"))?;
     fs::copy(&options.input, options.out.join("input.vx")).map_err(|e| e.to_string())?;
@@ -235,6 +259,11 @@ fn validate(options: &Options) -> Result<Verdict, String> {
         for (name, ir) in [("source", &source_ir), ("target", &target_ir)] {
             if !has_definition(ir, function) {
                 return Err(format!("{name} has no definition of {function}"));
+            }
+            if has_non_intrinsic_call(ir, function) {
+                return Err(format!(
+                    "{name} function {function} calls another function; select a leaf function to avoid spurious Alive2 counterexamples"
+                ));
             }
         }
     }
@@ -339,6 +368,17 @@ mod tests {
         assert!(!has_definition("declare i32 @probe()", "probe"));
         assert!(!has_definition("define i32 @other_probe() {", "probe"));
         assert!(!has_definition("  %x = call i32 @probe()", "probe"));
+    }
+
+    #[test]
+    fn rejects_calls_outside_llvm_intrinsics() {
+        let ir = "define i32 @f(i32 %x) {\n  %y = call i32 @other(i32 %x)\n  ret i32 %y\n}\n\
+                  define void @g(ptr %x) {\n  call void @llvm.lifetime.start.p0(i64 4, ptr %x)\n  ret void\n}\n\
+                  define i32 @h(i32 %x) {\n  %y = invoke i32 @other(i32 %x) to label %ok unwind label %err\n}\n";
+        assert!(has_non_intrinsic_call(ir, "f"));
+        assert!(!has_non_intrinsic_call(ir, "g"));
+        assert!(has_non_intrinsic_call(ir, "h"));
+        assert!(!has_non_intrinsic_call(ir, "missing"));
     }
 
     #[test]
