@@ -25,7 +25,11 @@ For a small, self-contained Vx file with a scalar `probe` function, try:
 ```
 
 `codegen` compares `--legacy-codegen -O0` with default codegen `-O0` in both
-directions. `mlir` checks whether default codegen `-O3` refines `-O0`.
+directions after applying LLVM's `mem2reg` to **both** modules. Both raw and
+normalized IR remain in the output directory. This avoids spurious Alive2
+counterexamples for equivalent phi-node and stack-slot lowering (observed on
+`tests/backend/pass/expr_assignment.vx`). `mlir` checks whether default codegen
+`-O3` refines `-O0`.
 `llvm` checks a small LLVM optimization pipeline against default `-O0` IR.
 `reference` checks whether Vx `-O0` refines the supplied reference IR. The
 reference must define the same named function with a compatible LLVM ABI; it

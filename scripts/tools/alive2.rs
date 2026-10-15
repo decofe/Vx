@@ -9,7 +9,7 @@ use std::process::{self, Command, Output};
 const HELP: &str = "Usage: vx-alive2 --mode codegen|mlir|llvm|reference --function NAME \
     --out DIRECTORY [--reference FILE.ll] FILE.vx
 
-codegen:   compare legacy and default code generation at -O0, in both directions
+codegen:   compare legacy and default code generation at -O0 after mem2reg, in both directions
 mlir:      compare default code generation at -O0 and -O3
 llvm:      check LLVM's function(mem2reg,instcombine,simplifycfg) pipeline
 reference: check Vx -O0 against the supplied LLVM IR specification
@@ -173,6 +173,21 @@ fn compile(options: &Options, name: &str, level: &str, legacy: bool) -> Result<P
     Ok(llvm)
 }
 
+fn normalize(options: &Options, name: &str, input: &Path) -> Result<PathBuf, String> {
+    // Flat codegen uses entry-block stack slots where legacy codegen uses phi nodes.
+    // Alive2 can report spurious poison for equivalent raw slot/phi pairs; run the
+    // standard LLVM promotion on both sides, keeping the original IR for audit.
+    let output = options.out.join(format!("{name}-normalized.ll"));
+    let mut command = Command::new(tool("OPT_PATH", "opt"));
+    command
+        .args(["-S", "-passes=mem2reg"])
+        .arg(input)
+        .arg("-o")
+        .arg(&output);
+    checked(command, &options.out, &format!("{name}-normalize"))?;
+    Ok(output)
+}
+
 fn has_definition(ir: &str, function: &str) -> bool {
     ir.lines().any(|line| {
         line.starts_with("define ")
@@ -205,6 +220,14 @@ fn validate(options: &Options) -> Result<Verdict, String> {
         }
         "mlir" => compile(options, "target", "-O3", false)?,
         _ => compile(options, "target", "-O0", false)?,
+    };
+    let (source, target) = if options.mode == "codegen" {
+        (
+            normalize(options, "source", &source)?,
+            normalize(options, "target", &target)?,
+        )
+    } else {
+        (source, target)
     };
     let source_ir = fs::read_to_string(&source).map_err(|e| e.to_string())?;
     let target_ir = fs::read_to_string(&target).map_err(|e| e.to_string())?;
